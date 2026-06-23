@@ -1455,6 +1455,17 @@ impl SessionSnapshot {
         &self.projects
     }
 
+    /// Returns the project with the closest enclosing root, falling back to the first project.
+    pub(crate) fn project_index_for_path(&self, path: &SystemPath) -> Option<usize> {
+        self.projects
+            .iter()
+            .enumerate()
+            .filter(|(_, db)| path.starts_with(db.project().root(*db)))
+            .max_by_key(|(_, db)| db.project().root(*db).as_str().len())
+            .map(|(index, _)| index)
+            .or_else(|| (!self.projects.is_empty()).then_some(0))
+    }
+
     pub(crate) fn index(&self) -> &Index {
         &self.index
     }

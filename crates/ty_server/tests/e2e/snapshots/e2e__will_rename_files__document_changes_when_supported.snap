@@ -1,0 +1,29 @@
+---
+source: crates/ty_server/tests/e2e/will_rename_files.rs
+expression: edits
+---
+{
+  "documentChanges": [
+    {
+      "textDocument": {
+        "version": null,
+        "uri": "file://<temp_dir>/consumer.py"
+      },
+      "edits": [
+        {
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 7
+            },
+            "end": {
+              "line": 0,
+              "character": 17
+            }
+          },
+          "newText": "new_module"
+        }
+      ]
+    }
+  ]
+}

@@ -35,6 +35,7 @@ bitflags::bitflags! {
         const DIAGNOSTIC_RELATED_INFORMATION = 1 << 17;
         const PREFER_MARKDOWN_IN_COMPLETION = 1 << 18;
         const COMPLETION_ITEM_SNIPPET_SUPPORT = 1 << 19;
+        const WORKSPACE_EDIT_DOCUMENT_CHANGES = 1 << 20;
     }
 }
 
@@ -94,6 +95,11 @@ impl ResolvedClientCapabilities {
     /// Returns `true` if the client supports workspace configuration.
     pub(crate) const fn supports_workspace_configuration(self) -> bool {
         self.contains(Self::WORKSPACE_CONFIGURATION)
+    }
+
+    /// Returns `true` if the client supports the `documentChanges` workspace-edit form.
+    pub(crate) const fn supports_workspace_edit_document_changes(self) -> bool {
+        self.contains(Self::WORKSPACE_EDIT_DOCUMENT_CHANGES)
     }
 
     /// Returns `true` if the client supports inlay hint refresh.
@@ -207,6 +213,13 @@ impl ResolvedClientCapabilities {
             .unwrap_or_default()
         {
             flags |= Self::WORKSPACE_CONFIGURATION;
+        }
+
+        if workspace
+            .and_then(|workspace| workspace.workspace_edit.as_ref()?.document_changes)
+            .unwrap_or_default()
+        {
+            flags |= Self::WORKSPACE_EDIT_DOCUMENT_CHANGES;
         }
 
         if workspace
@@ -483,6 +496,29 @@ pub(crate) fn server_capabilities(
                 // https://github.com/microsoft/language-server-protocol/issues/1720#issuecomment-1514732305
                 supported: Some(true),
                 change_notifications: Some(true.into()),
+            }),
+            file_operations: Some(lsp_types::FileOperationOptions {
+                will_rename: Some(lsp_types::FileOperationRegistrationOptions {
+                    filters: vec![
+                        lsp_types::FileOperationFilter {
+                            scheme: Some("file".to_string()),
+                            pattern: lsp_types::FileOperationPattern {
+                                glob: "**/*.{py,pyi}".to_string(),
+                                matches: Some(lsp_types::FileOperationPatternKind::File),
+                                options: None,
+                            },
+                        },
+                        lsp_types::FileOperationFilter {
+                            scheme: Some("file".to_string()),
+                            pattern: lsp_types::FileOperationPattern {
+                                glob: "**".to_string(),
+                                matches: Some(lsp_types::FileOperationPatternKind::Folder),
+                                options: None,
+                            },
+                        },
+                    ],
+                }),
+                ..Default::default()
             }),
             ..Default::default()
         }),
