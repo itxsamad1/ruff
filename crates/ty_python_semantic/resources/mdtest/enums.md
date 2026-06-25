@@ -737,6 +737,7 @@ Known built-in data-type mixins normalize member values before aliases are detec
 ```py
 from enum import Enum
 from ty_extensions import enum_members
+from typing import Literal
 
 class DirectInt(int, Enum):
     FROM_BOOL = False
@@ -759,6 +760,12 @@ reveal_type(DirectStr.FROM_STR)  # revealed: Literal[DirectStr.FROM_INT]
 reveal_type(DirectStr.OTHER.value)  # revealed: Literal["other"]
 # revealed: tuple[Literal["FROM_INT"], Literal["OTHER"]]
 reveal_type(enum_members(DirectStr))
+
+def union_member_value(value: Literal[1, 2]):
+    class UnionInt(int, Enum):
+        MEMBER = value
+
+    reveal_type(UnionInt.MEMBER.value)  # revealed: Literal[1, 2]
 ```
 
 ### Assigned `__new__`
