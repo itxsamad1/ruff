@@ -5875,6 +5875,10 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             }
 
             let narrowed_tcx = TypeContext::new(Some(narrowed_ty));
+            let inference_params = CallArgumentInferenceParams {
+                constraints: &constraints,
+                call_expression_tcx: narrowed_tcx,
+            };
 
             let mut speculative_bindings = bindings.clone();
             let mut speculative_builder = self.speculate();
@@ -5888,18 +5892,16 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     &baseline_argument_types,
                     infer_argument_ty,
                     &speculative_bindings,
-                    &constraints,
-                    narrowed_tcx,
+                    inference_params,
                 );
                 None
             } else {
                 speculative_builder.infer_argument_types_to_fixpoint(
-                    ast_arguments.clone(),
+                    &ast_arguments,
                     &mut speculative_argument_types,
                     infer_argument_ty,
                     &mut speculative_bindings,
-                    &constraints,
-                    narrowed_tcx,
+                    inference_params,
                     &generic_fixpoint,
                 )
             };
@@ -5965,14 +5967,17 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         }
 
         argument_types.clone_from(&baseline_argument_types);
+        let inference_params = CallArgumentInferenceParams {
+            constraints: &constraints,
+            call_expression_tcx,
+        };
         if !generic_fixpoint.argument_indices.is_empty() {
             if let Some(result) = self.infer_argument_types_to_fixpoint(
-                ast_arguments,
+                &ast_arguments,
                 argument_types,
                 infer_argument_ty,
                 bindings,
-                &constraints,
-                call_expression_tcx,
+                inference_params,
                 &generic_fixpoint,
             ) {
                 if teardown_expression_cache {
@@ -5987,8 +5992,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 &baseline_argument_types,
                 infer_argument_ty,
                 bindings,
-                &constraints,
-                call_expression_tcx,
+                inference_params,
             );
         }
 
@@ -6016,12 +6020,11 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
     /// binding clone, avoiding an identical check in the caller.
     fn infer_argument_types_to_fixpoint(
         &mut self,
-        ast_arguments: ArgumentsIter<'_>,
+        ast_arguments: &ArgumentsIter<'_>,
         argument_types: &mut CallArguments<'_, 'db>,
         infer_argument_ty: &mut dyn FnMut(&mut Self, ArgExpr<'db, '_>) -> Type<'db>,
         bindings: &mut Bindings<'db>,
-        constraints: &ConstraintSetBuilder<'db>,
-        call_expression_tcx: TypeContext<'db>,
+        inference_params: CallArgumentInferenceParams<'_, 'db>,
         generic_fixpoint: &GenericCallFixpoint,
     ) -> Option<Result<(), CallErrorKind>> {
         let db = self.db();
@@ -6034,8 +6037,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         let mut round_inference_contexts = self.collect_call_argument_inference_contexts(
             &context_argument_types,
             bindings,
-            constraints,
-            call_expression_tcx,
+            inference_params,
         );
         let mut next_argument_types = baseline_argument_types.clone();
         let mut next_bindings = bindings.clone();
@@ -6052,7 +6054,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             next_argument_types.clone_from(&baseline_argument_types);
             let mut round_builder = self.speculate();
             round_builder.infer_all_argument_types_with_contexts(
-                ast_arguments.clone(),
+                (*ast_arguments).clone(),
                 &mut next_argument_types,
                 &round_inference_contexts,
                 infer_argument_ty,
@@ -6071,17 +6073,16 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             next_bindings.clone_from(bindings);
             let checked_result = next_bindings.check_types_impl(
                 db,
-                constraints,
+                inference_params.constraints,
                 &next_argument_types,
-                call_expression_tcx,
+                inference_params.call_expression_tcx,
                 &self.dataclass_field_specifiers,
             );
 
             let next_inference_contexts = self.collect_call_argument_inference_contexts(
                 &next_argument_types,
                 &next_bindings,
-                constraints,
-                call_expression_tcx,
+                inference_params,
             );
             if round_inference_contexts
                 .equal_at(&next_inference_contexts, &generic_fixpoint.argument_indices)
@@ -6108,8 +6109,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         &self,
         argument_types: &CallArguments<'_, 'db>,
         bindings: &'bindings Bindings<'db>,
-        constraints: &ConstraintSetBuilder<'db>,
-        call_expression_tcx: TypeContext<'db>,
+        inference_params: CallArgumentInferenceParams<'_, 'db>,
     ) -> CallArgumentInferenceContexts<'db> {
         fn add_overloads_from_binding<'a, 'db>(
             overloads_with_binding: &mut Vec<(&'a Binding<'db>, &'a CallableBinding<'db>)>,
@@ -6151,11 +6151,11 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     |overload: &'bindings Binding<'db>, binding: &CallableBinding<'db>| {
                         overload.argument_type_context(
                             db,
-                            constraints,
+                            inference_params.constraints,
                             binding,
                             argument_types,
                             argument_index,
-                            call_expression_tcx,
+                            inference_params.call_expression_tcx,
                         )
                     };
 
@@ -6334,14 +6334,12 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         context_argument_types: &CallArguments<'_, 'db>,
         infer_argument_ty: &mut dyn FnMut(&mut Self, ArgExpr<'db, '_>) -> Type<'db>,
         bindings: &'bindings Bindings<'db>,
-        constraints: &ConstraintSetBuilder<'db>,
-        call_expression_tcx: TypeContext<'db>,
+        inference_params: CallArgumentInferenceParams<'_, 'db>,
     ) {
         let inference_contexts = self.collect_call_argument_inference_contexts(
             context_argument_types,
             bindings,
-            constraints,
-            call_expression_tcx,
+            inference_params,
         );
         self.infer_all_argument_types_with_contexts(
             ast_arguments,
@@ -12005,6 +12003,13 @@ impl Drop for MultiInferenceGuard<'_, '_, '_> {
 /// An expression representing the function argument at the given index, along with its type
 /// context.
 type ArgExpr<'db, 'ast> = (usize, &'ast ast::Expr, TypeContext<'db>);
+
+/// Immutable parameters shared while inferring call arguments for one return-type context.
+#[derive(Clone, Copy)]
+struct CallArgumentInferenceParams<'a, 'db> {
+    constraints: &'a ConstraintSetBuilder<'db>,
+    call_expression_tcx: TypeContext<'db>,
+}
 
 /// The source arguments whose contexts participate in generic-call fixpoint inference.
 ///
