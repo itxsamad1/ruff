@@ -1479,13 +1479,13 @@ impl<'db> InnerIntersectionBuilder<'db> {
         // dominates intersections. However, `Divergent` is actually a dynamic/gradual type, so
         // `~Divergent` acts like `Divergent` rather than dropping out like `~Never` does.
         // `Divergent` also gets a lot of special handling in cycle recovery.
-        if new_positive.is_divergent() {
+        if new_positive.is_cycle_artifact(db) {
             *self = Self::default();
             self.positive.insert(new_positive);
             return;
         }
         // `Divergent & T` -> `Divergent`
-        if self.positive.iter().any(Type::is_divergent) {
+        if self.positive.iter().any(|ty| ty.is_cycle_artifact(db)) {
             return;
         }
 
@@ -1692,8 +1692,14 @@ impl<'db> InnerIntersectionBuilder<'db> {
         }
 
         // `Divergent & ~T` -> `Divergent`.
-        if self.positive.iter().any(Type::is_divergent) {
+        if self.positive.iter().any(|ty| ty.is_cycle_artifact(db)) {
             debug_assert_eq!(self.positive.len(), 1, "`Divergent` should be alone");
+            return;
+        }
+
+        if new_negative.is_non_contractive_recursive(db) {
+            *self = Self::default();
+            self.positive.insert(new_negative);
             return;
         }
 
