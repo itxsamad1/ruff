@@ -188,7 +188,7 @@ def test_match_star(x: Sequence[int] | int) -> None:
             # TODO: After https://github.com/astral-sh/ty/issues/3314 is
             # fixed, the `Sequence[int] & str` intersection should simplify to
             # `Never`.
-            reveal_type(x)  # revealed: (Sequence[int] & str) | bytes | bytearray | (int & ~Sequence[object])
+            reveal_type(x)  # revealed: (int & ~Sequence[object]) | (Sequence[int] & str) | bytes | bytearray
 
 def test_match_star_excludes_text_and_bytes(x: str | bytes | bytearray | list[int]) -> None:
     match x:
@@ -224,49 +224,49 @@ def test_match_exact_sequence_excludes_bytearray(x: bytearray | tuple[int, int])
 def test_match_exact_object_sequence(value: object) -> None:
     match value:
         case int(), str():
-            # revealed: Sequence[object] & ~str & ~bytes & ~bytearray
+            # revealed: Sequence[object] & <Protocol with members '__getitem__', '__len__'> & ~str & ~bytes & ~bytearray
             reveal_type(value)
-            reveal_type(len(value))  # revealed: int
-            reveal_type(value[0])  # revealed: object
-            reveal_type(value[1])  # revealed: object
+            reveal_type(len(value))  # revealed: Literal[2]
+            reveal_type(value[0])  # revealed: int
+            reveal_type(value[1])  # revealed: str
 
 def test_match_empty_object_sequence(value: object) -> None:
     match value:
         case []:
-            # revealed: Sequence[object] & ~str & ~bytes & ~bytearray
+            # revealed: Sequence[object] & <Protocol with members '__len__'> & ~str & ~bytes & ~bytearray
             reveal_type(value)
-            reveal_type(len(value))  # revealed: int
+            reveal_type(len(value))  # revealed: Literal[0]
 
 def test_match_singleton_object_sequence(value: object) -> None:
     match value:
         case [int()]:
-            # revealed: Sequence[object] & ~str & ~bytes & ~bytearray
+            # revealed: Sequence[object] & <Protocol with members '__getitem__', '__len__'> & ~bytearray & ~bytes
             reveal_type(value)
-            reveal_type(len(value))  # revealed: int
-            reveal_type(value[0])  # revealed: object
+            reveal_type(len(value))  # revealed: Literal[1]
+            reveal_type(value[0])  # revealed: int
 
 def test_match_prefix_star_object_sequence(value: object) -> None:
     match value:
         case [int(), *rest]:
-            # revealed: Sequence[object] & ~str & ~bytes & ~bytearray
+            # revealed: Sequence[object] & <Protocol with members '__getitem__'> & ~str & ~bytes & ~bytearray
             reveal_type(value)
             reveal_type(len(value))  # revealed: int
-            reveal_type(value[0])  # revealed: object
+            reveal_type(value[0])  # revealed: int
             reveal_type(value[1])  # revealed: object
 
 def test_match_prefix_and_suffix_star_object_sequence(value: object) -> None:
     match value:
         case [int(), *rest, str()]:
-            # revealed: Sequence[object] & ~str & ~bytes & ~bytearray
+            # revealed: Sequence[object] & <Protocol with members '__getitem__'> & ~str & ~bytes & ~bytearray
             reveal_type(value)
-            reveal_type(value[0])  # revealed: object
-            reveal_type(value[-1])  # revealed: object
+            reveal_type(value[0])  # revealed: int
+            reveal_type(value[-1])  # revealed: str
             reveal_type(value[1])  # revealed: object
 
 def test_match_prefix_star_known_sequence(value: Sequence[int | str]) -> None:
     match value:
         case [int(), *rest]:
-            reveal_type(value[0])  # revealed: int | str
+            reveal_type(value[0])  # revealed: int
             reveal_type(value[1])  # revealed: int | str
             reveal_type(rest)  # revealed: list[int | str]
 ```
@@ -650,7 +650,7 @@ def mutable_sequence_alias_does_not_keep_previous_shape_constraints(
             whole.clear()
             match whole:
                 case []:
-                    reveal_type(whole)  # revealed: list[int]
+                    reveal_type(whole)  # revealed: list[int] & <Protocol with members '__len__'>
 ```
 
 ## Indirect class patterns
@@ -1386,6 +1386,157 @@ def test_required_typed_dict_key_excludes_fallback_binding(
             return item
 ```
 
+## Narrowing the match subject
+
+When a class, mapping, or sequence pattern succeeds, it can narrow the original match subject even
+if the pattern does not bind a name for the whole value. Nested patterns can remove union members,
+and an `or` pattern combines the possibilities from its alternatives.
+
+```py
+from typing import Any, Generic, Literal, TypeVar, final
+from typing_extensions import TypedDict
+from ty_extensions import Unknown
+
+TagT = TypeVar("TagT")
+PayloadT = TypeVar("PayloadT")
+
+class TaggedPayload(Generic[TagT, PayloadT]):
+    __match_args__ = ("tag", "payload")
+    tag: TagT
+    payload: PayloadT
+
+class GradualSubjectBox: ...
+
+def match_class_narrows_gradual_subjects(
+    any_value: Any,
+    unknown_value: Unknown,
+) -> None:
+    match any_value:
+        case GradualSubjectBox():
+            reveal_type(any_value)  # revealed: Any & GradualSubjectBox
+
+    match unknown_value:
+        case GradualSubjectBox():
+            reveal_type(unknown_value)  # revealed: Unknown & GradualSubjectBox
+
+def match_mapping_narrows_gradual_subjects(
+    any_value: Any,
+    unknown_value: Unknown,
+) -> None:
+    match any_value:
+        case {"key": _}:
+            reveal_type(any_value)  # revealed: Any & Top[Mapping[Unknown, object]]
+
+    match unknown_value:
+        case {"key": _}:
+            reveal_type(unknown_value)  # revealed: Unknown & Top[Mapping[Unknown, object]]
+
+def match_class_narrows_subject(
+    value: TaggedPayload[Literal["int"], int] | TaggedPayload[Literal["str"], str],
+) -> None:
+    match value:
+        case TaggedPayload("int", _):
+            reveal_type(value)  # revealed: TaggedPayload[Literal["int"], int]
+
+def match_self_child_narrows_subject(value: bool) -> Literal[True]:
+    match value:
+        case bool(True):
+            reveal_type(value)  # revealed: Literal[True]
+            return value
+        case _:
+            raise AssertionError
+
+def match_self_mutable_sequence_narrowing_can_become_stale(
+    value: list[int | str],
+) -> None:
+    match value:
+        case list([int(), str()]):
+            value.reverse()
+            # TODO: Mutation should invalidate the indexed element types established while the
+            # pattern was evaluated. After reversing the list, value[0] should be str.
+            reveal_type(value[0])  # revealed: int
+
+def match_class_or_pattern_narrows_subject(
+    value: TaggedPayload[Literal["int"], int] | TaggedPayload[Literal["str"], str] | TaggedPayload[Literal["bool"], bool],
+) -> None:
+    match value:
+        case TaggedPayload("int", _) | TaggedPayload("str", _):
+            # revealed: TaggedPayload[Literal["int"], int] | TaggedPayload[Literal["str"], str]
+            reveal_type(value)
+
+def match_sequence_narrows_tuple_element_subject(
+    value: tuple[Literal[1, 2]],
+) -> None:
+    match value:
+        case [1]:
+            reveal_type(value[0])  # revealed: Literal[1]
+
+@final
+class FinalWithoutRequestedAttribute: ...
+
+def missing_final_class_attribute_rejects_subject_alternative(
+    value: FinalWithoutRequestedAttribute | TaggedPayload[Literal["int"], int],
+) -> None:
+    match value:
+        case FinalWithoutRequestedAttribute(missing=_) | TaggedPayload("int", _):
+            reveal_type(value)  # revealed: TaggedPayload[Literal["int"], int]
+
+class IntPayload(TypedDict):
+    tag: Literal["int"]
+    value: int
+
+class StrPayload(TypedDict):
+    tag: Literal["str"]
+    value: str
+
+def match_mapping_narrows_subject(value: IntPayload | StrPayload) -> None:
+    match value:
+        case {"tag": "int"}:
+            reveal_type(value)  # revealed: IntPayload
+
+class PayloadContainer:
+    payload: IntPayload | StrPayload
+
+def mapping_pattern_narrows_attribute_subject(container: PayloadContainer) -> None:
+    match container.payload:
+        case {"tag": "int"}:
+            reveal_type(container.payload)  # revealed: IntPayload
+
+def nested_mapping_narrows_sequence_subject(
+    value: tuple[IntPayload] | tuple[StrPayload],
+) -> None:
+    match value:
+        case [{"tag": "int"}]:
+            reveal_type(value)  # revealed: tuple[IntPayload]
+
+def match_mapping_does_not_narrow_tuple_display_element(
+    value: IntPayload | StrPayload,
+) -> None:
+    match (value,):
+        case ({"tag": "int"},):
+            # TODO: This should reveal `IntPayload`. Mapping patterns do not yet narrow values used
+            # inside tuple display subjects.
+            reveal_type(value)  # revealed: IntPayload | StrPayload
+
+def match_value_does_not_narrow_dictionary_display_element(
+    value: Literal["int", "str"],
+) -> None:
+    match {"tag": value}:
+        case {"tag": "int"}:
+            # TODO: This should reveal `Literal["int"]`. Value patterns do not yet narrow values
+            # used inside dictionary display subjects.
+            reveal_type(value)  # revealed: Literal["int", "str"]
+
+def match_mapping_does_not_narrow_dictionary_display_element(
+    value: IntPayload | StrPayload,
+) -> None:
+    match {"payload": value}:
+        case {"payload": {"tag": "int"}}:
+            # TODO: This should reveal `IntPayload`. Mapping patterns do not yet narrow values used
+            # inside dictionary display subjects.
+            reveal_type(value)  # revealed: IntPayload | StrPayload
+```
+
 ## Exhaustive positional patterns for built-in classes
 
 Python defines a fixed set of built-in classes whose single positional subpattern receives the
@@ -1909,19 +2060,20 @@ def test_match_exact_mutable_sequence_negative(value: list[int]) -> None:
         case [int()]:
             pass
         case _:
-            reveal_type(value)  # revealed: list[int]
+            # revealed: list[int] & ~<Protocol with members '__getitem__', '__len__'>
+            reveal_type(value)
 ```
 
 ## Nested sequence patterns
 
-Nested patterns narrow values captured from the positions they inspect. For subjects without a known
-tuple shape, length and indexed-element facts are not retained on the original subject.
+Nested patterns narrow the fixed positions they inspect. The narrowed element types remain available
+through later indexing and destructuring.
 
 ```py
 def normalize_nested_record(value: object) -> tuple[None, int, int] | None:
     match value:
-        case [None as first, [int() as number], {} as mapping]:
-            ret = first, number, len(mapping)
+        case [None, [int()], {}]:
+            ret = value[0], value[1][0], len(value[2])
             reveal_type(ret)  # revealed: tuple[None, int, int]
             return ret
     return None
@@ -1929,8 +2081,8 @@ def normalize_nested_record(value: object) -> tuple[None, int, int] | None:
 def unwrap_number_or_label(value: object) -> int | str | None:
     match value:
         case [(int() | str()) as item]:
-            reveal_type(item)  # revealed: int | str
-            return item
+            reveal_type(value[0])  # revealed: int | str
+            return value[0]
     return None
 ```
 
@@ -2736,7 +2888,7 @@ reveal_type(x)  # revealed: object
 When performing narrowing on `self` inside methods on enums, we take into account that `Self` might
 refer to a subtype of the enum class, like `Literal[Answer.YES]`. This is why we do not simplify
 `Self & ~Literal[Answer.YES]` to `Literal[Answer.NO, Answer.MAYBE]`. Otherwise, we wouldn't be able
-to return `self` in the `assert_yes` method below:
+to return `self` in the `assert_yes` method below.
 
 ```py
 from enum import Enum
