@@ -859,11 +859,12 @@ def test_incompatible_declared_class_capture(value: PatternBox[int]) -> None:
 
 We do not yet infer a generic subclass's specialization from its base class. In the first two
 examples, ty therefore cannot infer `GenericPatternChild[int]` from `GenericPatternBase[int]`, so
-attributes declared only on the subclass are `Unknown`. Attributes inherited from the generic base
-class can still use the subject's specialization, as shown in the final example.
+type parameters in attributes declared only on the subclass become `Unknown`, while their known
+generic structure is preserved. Attributes inherited from the generic base class can still use the
+subject's specialization.
 
 ```py
-from typing import Generic, TypeVar
+from typing import final, Generic, TypeVar
 
 GenericPatternT = TypeVar("GenericPatternT")
 
@@ -879,6 +880,10 @@ class GenericMemberBase(Generic[GenericPatternT]):
 class GenericMemberChild(GenericMemberBase[GenericPatternT]): ...
 class IntGenericMemberChild(GenericMemberBase[int]): ...
 
+@final
+class FinalGenericPatternBox(Generic[GenericPatternT]):
+    value: list[GenericPatternT]
+
 def test_match_generic_subclass_capture(value: GenericPatternBase[int]) -> None:
     match value:
         case GenericPatternChild(item=item):
@@ -888,8 +893,7 @@ def test_match_generic_subclass_capture(value: GenericPatternBase[int]) -> None:
 def test_match_nested_generic_subclass_capture(value: GenericPatternBase[int]) -> list[int]:
     match value:
         case GenericPatternChild(items=items):
-            # TODO: This should be `list[int]` once generic subclass specialization is supported.
-            reveal_type(items)  # revealed: Unknown
+            reveal_type(items)  # revealed: list[Unknown]
             return items
     return []
 
@@ -911,6 +915,12 @@ def test_match_generic_base_capture_preserves_subject_specialization(
         case GenericMemberBase(item=item):
             reveal_type(item)  # revealed: int
             item.bit_length()
+
+def test_match_direct_generic_pattern_preserves_declared_member(value: object) -> None:
+    match value:
+        case FinalGenericPatternBox(value=int() as item):
+            reveal_type(item)  # revealed: Never
+            reveal_type(value)  # revealed: Never
 ```
 
 ## Positional class patterns
