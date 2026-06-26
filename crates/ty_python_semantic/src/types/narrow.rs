@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, btree_map::Entry as BTreeEntry, hash_map::Entry};
+use std::hash::Hash;
 
 use crate::Db;
 use crate::reachability::{narrow_type_by_constraint, type_narrowed_by_previous_patterns};
@@ -21,6 +22,7 @@ use crate::types::{
     pattern_binding_fallthrough_type, sequence_pattern_type_builder, singleton_pattern_type,
     starred_sequence_pattern_type, typed_dict_matches_class_pattern,
 };
+use ty_python_core::ast_ids::HasScopedUseId;
 use ty_python_core::expression::Expression;
 use ty_python_core::frozen::FrozenMap;
 use ty_python_core::place::{PlaceExpr, PlaceTable, ScopedPlaceId};
@@ -30,7 +32,10 @@ use ty_python_core::predicate::{
     SubjectElementPatternPredicate,
 };
 use ty_python_core::scope::ScopeId;
-use ty_python_core::{ExpressionNodeKey, NarrowingEvaluator, place_table, semantic_index};
+use ty_python_core::{
+    ExpressionNodeKey, NarrowingEvaluator, ScopedDefinitionId, place_table, semantic_index,
+    use_def_map,
+};
 
 use ruff_db::parsed::{ParsedModuleRef, parsed_module};
 use ruff_python_ast::name::Name;
@@ -781,22 +786,34 @@ impl<'db> From<Type<'db>> for NarrowingConstraint<'db> {
 type NarrowingConstraints<'db> = FxHashMap<ScopedPlaceId, NarrowingConstraint<'db>>;
 type FrozenNarrowingConstraints<'db> = FrozenMap<ScopedPlaceId, NarrowingConstraint<'db>>;
 
+/// Identifies one runtime value read while evaluating a sequence-display match subject.
+///
+/// The live bindings distinguish repeated reads from occurrences separated by a rebinding.
+#[derive(Hash, PartialEq, Eq)]
+struct SubjectValueConstraintKey {
+    place: ScopedPlaceId,
+    bindings: SmallVec<[ScopedDefinitionId; 2]>,
+}
+
+type SubjectValueConstraints<'db> = FxHashMap<SubjectValueConstraintKey, NarrowingConstraint<'db>>;
+type MergeNarrowingConstraints<'db, K> = fn(
+    Option<FxHashMap<K, NarrowingConstraint<'db>>>,
+    Option<FxHashMap<K, NarrowingConstraint<'db>>>,
+) -> Option<FxHashMap<K, NarrowingConstraint<'db>>>;
+
 /// The narrowing constraints contributed by a match pattern.
 ///
 /// An impossible alternative is omitted from an OR pattern, while a possible alternative with no
 /// constraints prevents the OR pattern from narrowing.
-enum PatternNarrowingResult<'db> {
+enum PatternNarrowingResult<'db, K = ScopedPlaceId> {
     Impossible,
-    Possible(Option<NarrowingConstraints<'db>>),
+    Possible(Option<FxHashMap<K, NarrowingConstraint<'db>>>),
 }
 
-impl<'db> PatternNarrowingResult<'db> {
+impl<'db, K: Eq + Hash> PatternNarrowingResult<'db, K> {
     fn merge_alternatives(
         alternatives: impl Iterator<Item = Self>,
-        merge_constraints: fn(
-            Option<NarrowingConstraints<'db>>,
-            Option<NarrowingConstraints<'db>>,
-        ) -> Option<NarrowingConstraints<'db>>,
+        merge_constraints: MergeNarrowingConstraints<'db, K>,
     ) -> Self {
         let mut alternatives = alternatives.filter_map(|alternative| match alternative {
             Self::Impossible => None,
@@ -809,7 +826,7 @@ impl<'db> PatternNarrowingResult<'db> {
         Self::Possible(alternatives.fold(first, merge_constraints))
     }
 
-    fn into_constraints(self) -> Option<NarrowingConstraints<'db>> {
+    fn into_constraints(self) -> Option<FxHashMap<K, NarrowingConstraint<'db>>> {
         match self {
             Self::Impossible | Self::Possible(None) => None,
             Self::Possible(Some(constraints)) => Some(constraints),
@@ -855,9 +872,9 @@ fn insert_narrowing_constraint<'db>(
 /// For each conjunction pair, we:
 /// - Take the right conjunct if it has a `replacement`
 /// - Intersect the constraints normally otherwise
-fn merge_constraints_and<'db>(
-    into: &mut NarrowingConstraints<'db>,
-    from: NarrowingConstraints<'db>,
+fn merge_constraints_and<'db, K: Eq + Hash>(
+    into: &mut FxHashMap<K, NarrowingConstraint<'db>>,
+    from: FxHashMap<K, NarrowingConstraint<'db>>,
 ) {
     #[expect(
         clippy::iter_over_hash_type,
@@ -884,9 +901,9 @@ fn merge_constraints_and<'db>(
 ///
 /// However, if a place appears in only one branch of the OR, we need to widen it
 /// to `object` in the overall result (because the other branch doesn't constrain it).
-fn merge_constraints_or<'db>(
-    into: &mut NarrowingConstraints<'db>,
-    from: NarrowingConstraints<'db>,
+fn merge_constraints_or<'db, K: Eq + Hash>(
+    into: &mut FxHashMap<K, NarrowingConstraint<'db>>,
+    from: FxHashMap<K, NarrowingConstraint<'db>>,
 ) {
     // For places that appear in `into` but not in `from`, widen to object
     into.retain(|key, _| from.contains_key(key));
@@ -1099,10 +1116,10 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
         }
     }
 
-    fn merge_optional_constraints_and(
-        left: Option<NarrowingConstraints<'db>>,
-        right: Option<NarrowingConstraints<'db>>,
-    ) -> Option<NarrowingConstraints<'db>> {
+    fn merge_optional_constraints_and<K: Eq + Hash>(
+        left: Option<FxHashMap<K, NarrowingConstraint<'db>>>,
+        right: Option<FxHashMap<K, NarrowingConstraint<'db>>>,
+    ) -> Option<FxHashMap<K, NarrowingConstraint<'db>>> {
         match (left, right) {
             (Some(mut left), Some(right)) => {
                 merge_constraints_and(&mut left, right);
@@ -1114,10 +1131,10 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
         }
     }
 
-    fn merge_optional_constraints_or(
-        left: Option<NarrowingConstraints<'db>>,
-        right: Option<NarrowingConstraints<'db>>,
-    ) -> Option<NarrowingConstraints<'db>> {
+    fn merge_optional_constraints_or<K: Eq + Hash>(
+        left: Option<FxHashMap<K, NarrowingConstraint<'db>>>,
+        right: Option<FxHashMap<K, NarrowingConstraint<'db>>>,
+    ) -> Option<FxHashMap<K, NarrowingConstraint<'db>>> {
         match (left, right) {
             (Some(mut left), Some(right)) => {
                 merge_constraints_or(&mut left, right);
@@ -3547,6 +3564,128 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
         }
     }
 
+    fn evaluate_match_pattern_sequence_possibility(
+        &mut self,
+        subject_expression: Expression<'db>,
+        elements: &[ast::Expr],
+        kind: &SequencePatternPredicateKind<'db>,
+    ) -> PatternNarrowingResult<'db, SubjectValueConstraintKey> {
+        if elements.iter().any(ast::Expr::is_starred_expr) {
+            return PatternNarrowingResult::Possible(None);
+        }
+
+        let (prefix_patterns, suffix_patterns) =
+            if let Some((prefix, suffix)) = kind.split_around_star() {
+                if elements.len() < prefix.len() + suffix.len() {
+                    return PatternNarrowingResult::Impossible;
+                }
+                (prefix, suffix)
+            } else {
+                if elements.len() != kind.patterns.len() {
+                    return PatternNarrowingResult::Impossible;
+                }
+                (kind.patterns.as_ref(), &[][..])
+            };
+        let element_patterns = elements
+            .iter()
+            .zip(prefix_patterns)
+            .chain(elements.iter().rev().zip(suffix_patterns.iter().rev()));
+        let mut constraints = None;
+        for (element, pattern) in element_patterns {
+            match self.evaluate_match_pattern_possibility_for_subject_element(
+                subject_expression,
+                element,
+                pattern,
+            ) {
+                PatternNarrowingResult::Impossible => return PatternNarrowingResult::Impossible,
+                PatternNarrowingResult::Possible(element_constraints) => {
+                    constraints =
+                        Self::merge_optional_constraints_and(constraints, element_constraints);
+                }
+            }
+        }
+
+        if constraints.as_ref().is_some_and(|constraints| {
+            constraints.values().any(|constraint| {
+                constraint
+                    .clone()
+                    .evaluate_constraint_type(self.db)
+                    .is_never()
+            })
+        }) {
+            PatternNarrowingResult::Impossible
+        } else {
+            PatternNarrowingResult::Possible(constraints)
+        }
+    }
+
+    fn evaluate_match_pattern_possibility_for_subject_element(
+        &mut self,
+        subject_expression: Expression<'db>,
+        subject: &ast::Expr,
+        pattern: &PatternPredicateKind<'db>,
+    ) -> PatternNarrowingResult<'db, SubjectValueConstraintKey> {
+        if let Some(elements) = Self::sequence_expression_elements(subject) {
+            return match pattern {
+                PatternPredicateKind::Sequence(kind) => self
+                    .evaluate_match_pattern_sequence_possibility(
+                        subject_expression,
+                        elements,
+                        kind,
+                    ),
+                PatternPredicateKind::As(Some(pattern), _) => self
+                    .evaluate_match_pattern_possibility_for_subject_element(
+                        subject_expression,
+                        subject,
+                        pattern,
+                    ),
+                PatternPredicateKind::Or(patterns) => PatternNarrowingResult::merge_alternatives(
+                    patterns.iter().map(|pattern| {
+                        self.evaluate_match_pattern_possibility_for_subject_element(
+                            subject_expression,
+                            subject,
+                            pattern,
+                        )
+                    }),
+                    Self::merge_optional_constraints_or,
+                ),
+                _ => PatternNarrowingResult::Possible(None),
+            };
+        }
+
+        let subject_expr = subject;
+        let Some(subject) = PlaceExpr::try_from_expr(subject_expr) else {
+            return PatternNarrowingResult::Possible(None);
+        };
+        let subject_ty =
+            infer_expression_types(self.db, subject_expression, TypeContext::default())
+                .expression_type(subject_expr);
+        let Some(constraint) = self.positive_subject_constraint(pattern, subject_ty) else {
+            return PatternNarrowingResult::Possible(None);
+        };
+        if NarrowingConstraint::intersection(subject_ty)
+            .merge_constraint_and(constraint.clone())
+            .evaluate_constraint_type(self.db)
+            .is_never()
+        {
+            return PatternNarrowingResult::Impossible;
+        }
+
+        let file = subject_expression.file(self.db);
+        let use_id = ast::ExprRef::from(subject_expr).scoped_use_id(self.db, file);
+        let bindings = use_def_map(self.db, self.scope())
+            .bindings_at_use(use_id)
+            .map(|binding| binding.binding_order)
+            .collect();
+        let key = SubjectValueConstraintKey {
+            place: self.expect_place(&subject),
+            bindings,
+        };
+        PatternNarrowingResult::Possible(Some(SubjectValueConstraints::from_iter([(
+            key, constraint,
+        )])))
+    }
+
     fn evaluate_match_pattern_sequence_for_subject_element(
         &mut self,
         subject_expression: Expression<'db>,
@@ -3576,6 +3715,13 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
 
         if !is_positive {
             return PatternNarrowingResult::Possible(None);
+        }
+
+        if matches!(
+            self.evaluate_match_pattern_sequence_possibility(subject_expression, elements, kind),
+            PatternNarrowingResult::Impossible
+        ) {
+            return PatternNarrowingResult::Impossible;
         }
 
         let element_patterns = elements
