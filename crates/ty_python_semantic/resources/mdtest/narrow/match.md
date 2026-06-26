@@ -188,7 +188,7 @@ def test_match_star(x: Sequence[int] | int) -> None:
             # TODO: After https://github.com/astral-sh/ty/issues/3314 is
             # fixed, the `Sequence[int] & str` intersection should simplify to
             # `Never`.
-            reveal_type(x)  # revealed: (int & ~Sequence[object]) | (Sequence[int] & str) | bytes | bytearray
+            reveal_type(x)  # revealed: (Sequence[int] & str) | bytes | bytearray | (int & ~Sequence[object])
 
 def test_match_star_excludes_text_and_bytes(x: str | bytes | bytearray | list[int]) -> None:
     match x:
@@ -651,6 +651,18 @@ def mutable_sequence_alias_does_not_keep_previous_shape_constraints(
             match whole:
                 case []:
                     reveal_type(whole)  # revealed: list[int]
+
+def mutable_sequence_subject_does_not_keep_failed_shape_constraints(
+    value: list[int],
+) -> None:
+    match value:
+        case []:
+            pass
+        case _:
+            value.clear()
+            match value:
+                case []:
+                    reveal_type(value)  # revealed: list[int]
 ```
 
 ## Indirect class patterns
@@ -2039,8 +2051,7 @@ def test_match_exact_mutable_sequence_negative(value: list[int]) -> None:
         case [int()]:
             pass
         case _:
-            # revealed: list[int] & ~<Protocol with members '__getitem__', '__len__'>
-            reveal_type(value)
+            reveal_type(value)  # revealed: list[int]
 ```
 
 ## Nested sequence patterns

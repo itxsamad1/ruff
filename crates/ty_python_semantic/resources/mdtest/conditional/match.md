@@ -66,10 +66,8 @@ def sequence_prefix_star_pattern_is_not_catch_all(paths: Sequence[str]) -> None:
         case [_first, _second, *_paths]:
             raise ValueError
 
-    # Exact sequence alternatives and the definitely matched tuple subset of the
-    # starred alternative remain as negative constraints.
-    # revealed: (Sequence[str] & ~<Protocol with members '__len__'> & ~<Protocol with members '__getitem__', '__len__'> & ~tuple[object, object, *tuple[object, ...]]) | str | (Sequence[str] & bytes) | (Sequence[str] & bytearray)
-    reveal_type(paths)
+    # The failed length checks are not retained for a sequence whose length can change.
+    reveal_type(paths)  # revealed: Sequence[str]
 
 def normalize_version(
     version: str | tuple[int, int] | tuple[int, int, int],

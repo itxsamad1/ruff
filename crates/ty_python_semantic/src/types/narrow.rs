@@ -18,8 +18,8 @@ use crate::types::{
     Type, TypeContext, TypeVarBoundOrConstraints, UnionBuilder, callable_pattern_type,
     class_pattern_positional_sources, definite_match_pattern_type_for_subject,
     exact_sequence_pattern_type, infer_expression_types, mapping_pattern_type,
-    pattern_fallthrough_type, sequence_pattern_type_builder, singleton_pattern_type,
-    starred_sequence_pattern_type, typed_dict_matches_class_pattern,
+    pattern_binding_fallthrough_type, pattern_fallthrough_type, sequence_pattern_type_builder,
+    singleton_pattern_type, starred_sequence_pattern_type, typed_dict_matches_class_pattern,
 };
 use ty_python_core::expression::Expression;
 use ty_python_core::frozen::FrozenMap;
@@ -3441,16 +3441,16 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
         };
 
         let subject_ty = infer_same_file_expression_type(self.db, subject, TypeContext::default());
-        let sequence_type = definite_match_pattern_type_for_subject(self.db, pattern, subject_ty);
-        if sequence_type.is_never() {
+        let narrowed_ty = pattern_binding_fallthrough_type(self.db, pattern, subject_ty);
+        if narrowed_ty == subject_ty {
             return PatternNarrowingResult::Possible(None);
         }
-        let constraint = NarrowingConstraint::intersection(sequence_type.negate(self.db));
 
         let place = self.expect_place(&subject_place);
 
         PatternNarrowingResult::Possible(Some(NarrowingConstraints::from_iter([(
-            place, constraint,
+            place,
+            NarrowingConstraint::replacement(narrowed_ty),
         )])))
     }
 
