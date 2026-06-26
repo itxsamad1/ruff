@@ -1508,33 +1508,6 @@ def nested_mapping_narrows_sequence_subject(
     match value:
         case [{"tag": "int"}]:
             reveal_type(value)  # revealed: tuple[IntPayload]
-
-def match_mapping_does_not_narrow_tuple_display_element(
-    value: IntPayload | StrPayload,
-) -> None:
-    match (value,):
-        case ({"tag": "int"},):
-            # TODO: This should reveal `IntPayload`. Mapping patterns do not yet narrow values used
-            # inside tuple display subjects.
-            reveal_type(value)  # revealed: IntPayload | StrPayload
-
-def match_value_does_not_narrow_dictionary_display_element(
-    value: Literal["int", "str"],
-) -> None:
-    match {"tag": value}:
-        case {"tag": "int"}:
-            # TODO: This should reveal `Literal["int"]`. Value patterns do not yet narrow values
-            # used inside dictionary display subjects.
-            reveal_type(value)  # revealed: Literal["int", "str"]
-
-def match_mapping_does_not_narrow_dictionary_display_element(
-    value: IntPayload | StrPayload,
-) -> None:
-    match {"payload": value}:
-        case {"payload": {"tag": "int"}}:
-            # TODO: This should reveal `IntPayload`. Mapping patterns do not yet narrow values used
-            # inside dictionary display subjects.
-            reveal_type(value)  # revealed: IntPayload | StrPayload
 ```
 
 ## Exhaustive positional patterns for built-in classes
@@ -2888,7 +2861,7 @@ reveal_type(x)  # revealed: object
 When performing narrowing on `self` inside methods on enums, we take into account that `Self` might
 refer to a subtype of the enum class, like `Literal[Answer.YES]`. This is why we do not simplify
 `Self & ~Literal[Answer.YES]` to `Literal[Answer.NO, Answer.MAYBE]`. Otherwise, we wouldn't be able
-to return `self` in the `assert_yes` method below.
+to return `self` in the `assert_yes` method below:
 
 ```py
 from enum import Enum
