@@ -2009,7 +2009,7 @@ impl<'db> PatternSuccessAnalyzer<'db> {
         }
         let value_types = key_types
             .iter()
-            .map(|key_ty| self.mapping_pattern_value_type_for_arm(subject_ty, *key_ty))
+            .map(|key_ty| self.mapping_pattern_value_type_for_arm(narrowed_subject_ty, *key_ty))
             .collect::<Option<Vec<_>>>()?;
         Some((narrowed_subject_ty, value_types))
     }
