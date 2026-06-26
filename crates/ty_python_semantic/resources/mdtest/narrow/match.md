@@ -2278,12 +2278,27 @@ Element narrowing respects later cases, OR patterns, impossible alternatives, re
 expressions, and starred sequence patterns.
 
 ```py
+from typing import final
+
 class TupleSubjectA: ...
 class TupleSubjectA1(TupleSubjectA): ...
 class TupleSubjectA2(TupleSubjectA): ...
 class TupleSubjectB: ...
 class TupleSubjectB1(TupleSubjectB): ...
 class TupleSubjectB2(TupleSubjectB): ...
+class OrDisplayA: ...
+
+@final
+class OrDisplayA1(OrDisplayA): ...
+
+@final
+class OrDisplayA2(OrDisplayA): ...
+
+@final
+class OrDisplayB1: ...
+
+@final
+class OrDisplayB2: ...
 
 def match_tuple_expression_later_case(a: TupleSubjectA, b: TupleSubjectB) -> None:
     match a, b:
@@ -2317,6 +2332,15 @@ def match_tuple_expression_or_impossible_alternative(
         case [TupleSubjectA1()] | [TupleSubjectA2(), TupleSubjectB1()]:
             reveal_type(a)  # revealed: TupleSubjectA2
             reveal_type(b)  # revealed: TupleSubjectB1
+
+def match_tuple_expression_or_drops_impossible_structural_alternative(
+    a: OrDisplayA,
+    b: OrDisplayB1,
+) -> None:
+    match a, b:
+        case (OrDisplayA1(), OrDisplayB2()) | (OrDisplayA2(), OrDisplayB1()):
+            reveal_type(a)  # revealed: OrDisplayA2
+            reveal_type(b)  # revealed: OrDisplayB1
 
 def match_repeated_tuple_expression_subject(a: TupleSubjectA) -> None:
     match a, a:

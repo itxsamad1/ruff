@@ -3644,19 +3644,28 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
         let Some(subject) = PlaceExpr::try_from_expr(subject_expr) else {
             return PatternNarrowingResult::Possible(None);
         };
+        let subject_ty =
+            infer_expression_types(self.db, subject_expression, TypeContext::default())
+                .expression_type(subject_expr);
+        let Some(constraint) = self.positive_subject_constraint(pattern, subject_ty) else {
+            return PatternNarrowingResult::Possible(None);
+        };
+        if NarrowingConstraint::intersection(subject_ty)
+            .merge_constraint_and(constraint.clone())
+            .evaluate_constraint_type(self.db)
+            .is_never()
+        {
+            return PatternNarrowingResult::Impossible;
+        }
         if let Some(target) = target
             && ExpressionNodeKey::from(subject_expr) != target
         {
             return PatternNarrowingResult::Possible(None);
         }
-        let subject_ty =
-            infer_expression_types(self.db, subject_expression, TypeContext::default())
-                .expression_type(subject_expr);
-        PatternNarrowingResult::Possible(self.positive_subject_constraint(pattern, subject_ty).map(
-            |constraint| {
-                NarrowingConstraints::from_iter([(self.expect_place(&subject), constraint)])
-            },
-        ))
+        PatternNarrowingResult::Possible(Some(NarrowingConstraints::from_iter([(
+            self.expect_place(&subject),
+            constraint,
+        )])))
     }
 
     fn evaluate_match_pattern_value(
