@@ -2022,26 +2022,28 @@ impl<'db> PatternSuccessAnalyzer<'db> {
         subject_ty: Type<'db>,
     ) -> Type<'db> {
         let target_len = Self::sequence_pattern_target_len(kind);
-        let sequence_ty = necessary_sequence_pattern_type(self.db, kind);
+        let sequence_ty = sequence_pattern_type_builder(self.db).build();
         self.analyze_matched_subject_arms(
             subject_ty,
             OriginalSubjectPreservation::TypeVariablesOnly,
             |analyzer, _, subject_ty| {
                 let (narrowed_subject_ty, element_types) =
                     analyzer.sequence_pattern_arm(subject_ty, target_len, sequence_ty)?;
-                let mut matched_element_types = Vec::with_capacity(kind.patterns.len());
+                let mut persistent_element_types = Vec::with_capacity(kind.patterns.len());
                 for (pattern, element_ty) in kind.patterns.iter().zip(element_types) {
-                    let child_ty = analyzer.matched_subject_type(pattern, element_ty);
-                    if child_ty.is_never() {
+                    let child = analyzer.analyze_successful_pattern(pattern, element_ty);
+                    if child.matched_subject_ty.is_never() {
                         return None;
                     }
-                    matched_element_types.push(child_ty);
+                    // Use the mutation-safe type so an exact tuple does not retain stale facts
+                    // about a mutable sequence stored in one of its elements.
+                    persistent_element_types.push(child.binding_subject_ty);
                 }
                 Some(analyzer.successful_sequence_subject_type(
                     kind,
                     subject_ty,
                     narrowed_subject_ty,
-                    &matched_element_types,
+                    &persistent_element_types,
                 ))
             },
         )
