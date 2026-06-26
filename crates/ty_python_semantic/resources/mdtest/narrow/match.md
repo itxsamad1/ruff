@@ -2083,6 +2083,16 @@ narrows the corresponding narrowable elements. If a multi-element pattern fails,
 which element failed to match.
 
 ```py
+from typing import Generic, Literal, TypeVar
+
+DisplayTagT = TypeVar("DisplayTagT")
+DisplayPayloadT = TypeVar("DisplayPayloadT")
+
+class DisplayTaggedPayload(Generic[DisplayTagT, DisplayPayloadT]):
+    __match_args__ = ("tag", "payload")
+    tag: DisplayTagT
+    payload: DisplayPayloadT
+
 class TupleSubjectA: ...
 class TupleSubjectA1(TupleSubjectA): ...
 class TupleSubjectB: ...
@@ -2105,6 +2115,13 @@ def match_list_expression_subject(a: TupleSubjectA, b: TupleSubjectB) -> None:
         case [TupleSubjectA1(), TupleSubjectB1()]:
             reveal_type(a)  # revealed: TupleSubjectA1
             reveal_type(b)  # revealed: TupleSubjectB1
+
+def match_tuple_expression_structural_subject(
+    value: DisplayTaggedPayload[Literal["int"], int] | DisplayTaggedPayload[Literal["str"], str],
+) -> None:
+    match (value,):
+        case (DisplayTaggedPayload("int", _),):
+            reveal_type(value)  # revealed: DisplayTaggedPayload[Literal["int"], int]
 ```
 
 ## Nested sequence display subjects

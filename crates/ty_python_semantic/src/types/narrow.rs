@@ -1237,7 +1237,12 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
         subject_node: &ast::Expr,
     ) -> PatternNarrowingResult<'db> {
         if Self::sequence_expression_elements(subject_node).is_some() {
-            return self.evaluate_match_pattern_for_subject_element(subject_node, pattern, None);
+            return self.evaluate_match_pattern_for_subject_element(
+                subject,
+                subject_node,
+                pattern,
+                None,
+            );
         }
 
         match pattern {
@@ -2378,8 +2383,10 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
         subject_element: SubjectElementPatternPredicate<'db>,
     ) -> Option<NarrowingConstraints<'db>> {
         let pattern = subject_element.pattern;
-        let subject = pattern.subject(self.db).node_ref(self.db).node(self.module);
+        let subject_expression = pattern.subject(self.db);
+        let subject = subject_expression.node_ref(self.db).node(self.module);
         self.evaluate_match_pattern_for_subject_element(
+            subject_expression,
             subject,
             pattern.kind(self.db),
             Some(subject_element.target),
@@ -3432,8 +3439,9 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
         //
         // Apply the element constraints to the narrowable elements of the subject expression.
         if let Some(elements) = Self::sequence_expression_elements(subject_node) {
-            return self
-                .evaluate_match_pattern_sequence_for_subject_element(elements, kind, false, None);
+            return self.evaluate_match_pattern_sequence_for_subject_element(
+                subject, elements, kind, false, None,
+            );
         }
 
         let Some(subject_place) = PlaceExpr::try_from_expr(subject_node) else {
@@ -3464,6 +3472,7 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
 
     fn evaluate_match_pattern_sequence_for_subject_element(
         &mut self,
+        subject_expression: Expression<'db>,
         elements: &[ast::Expr],
         kind: &SequencePatternPredicateKind<'db>,
         is_positive: bool,
@@ -3498,7 +3507,12 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
             .chain(elements.iter().rev().zip(suffix_patterns.iter().rev()));
         let mut constraints = None;
         for (element, pattern) in element_patterns {
-            match self.evaluate_match_pattern_for_subject_element(element, pattern, target) {
+            match self.evaluate_match_pattern_for_subject_element(
+                subject_expression,
+                element,
+                pattern,
+                target,
+            ) {
                 PatternNarrowingResult::Impossible => return PatternNarrowingResult::Impossible,
                 PatternNarrowingResult::Possible(element_constraints) => {
                     constraints =
@@ -3512,6 +3526,7 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
 
     fn evaluate_match_pattern_for_subject_element(
         &mut self,
+        subject_expression: Expression<'db>,
         subject: &ast::Expr,
         pattern: &PatternPredicateKind<'db>,
         target: Option<ExpressionNodeKey>,
@@ -3520,14 +3535,27 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
             return match pattern {
                 PatternPredicateKind::Sequence(kind) => self
                     .evaluate_match_pattern_sequence_for_subject_element(
-                        elements, kind, true, target,
+                        subject_expression,
+                        elements,
+                        kind,
+                        true,
+                        target,
                     ),
-                PatternPredicateKind::As(Some(pattern), _) => {
-                    self.evaluate_match_pattern_for_subject_element(subject, pattern, target)
-                }
+                PatternPredicateKind::As(Some(pattern), _) => self
+                    .evaluate_match_pattern_for_subject_element(
+                        subject_expression,
+                        subject,
+                        pattern,
+                        target,
+                    ),
                 PatternPredicateKind::Or(patterns) => PatternNarrowingResult::merge_alternatives(
                     patterns.iter().map(|pattern| {
-                        self.evaluate_match_pattern_for_subject_element(subject, pattern, target)
+                        self.evaluate_match_pattern_for_subject_element(
+                            subject_expression,
+                            subject,
+                            pattern,
+                            target,
+                        )
                     }),
                     Self::merge_optional_constraints_or,
                 ),
@@ -3544,10 +3572,14 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
         {
             return PatternNarrowingResult::Possible(None);
         }
-        PatternNarrowingResult::Possible(Some(NarrowingConstraints::from_iter([(
-            self.expect_place(&subject),
-            NarrowingConstraint::intersection(necessary_match_pattern_type(self.db, pattern)),
-        )])))
+        let subject_ty =
+            infer_expression_types(self.db, subject_expression, TypeContext::default())
+                .expression_type(subject_expr);
+        PatternNarrowingResult::Possible(self.positive_subject_constraint(pattern, subject_ty).map(
+            |constraint| {
+                NarrowingConstraints::from_iter([(self.expect_place(&subject), constraint)])
+            },
+        ))
     }
 
     fn evaluate_match_pattern_value(
